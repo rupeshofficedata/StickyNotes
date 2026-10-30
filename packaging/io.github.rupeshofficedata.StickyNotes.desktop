@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=StickyNotes
+GenericName=Sticky Notes
+Comment=Keep short notes in small windows on your desktop
+Exec=stickynotes
+Icon=io.github.rupeshofficedata.StickyNotes
+Categories=Utility;
+Keywords=notes;sticky;memo;
+StartupNotify=true
+StartupWMClass=stickynotes
+DBusActivatable=true

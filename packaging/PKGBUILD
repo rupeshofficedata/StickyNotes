@@ -1,0 +1,26 @@
+# Maintainer: rupeshofficedata
+# The project is not published yet. The source URL below assumes a GitHub repository named
+# rupeshofficedata/StickyNotes with a v$pkgver tag. Change it, and set sha256sums, before submitting to the AUR.
+pkgname=stickynotes
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Sticky notes for KDE Plasma: small note windows with formatting and images'
+arch=(x86_64)
+url='https://github.com/rupeshofficedata/StickyNotes'
+license=(GPL-3.0-or-later)
+depends=(qt6-base qt6-declarative kdbusaddons kstatusnotifieritem)
+makedepends=(cmake)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=(SKIP)
+
+build() {
+  cmake -S "StickyNotes-$pkgver" -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DBUILD_TESTING=OFF
+  cmake --build build
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+}

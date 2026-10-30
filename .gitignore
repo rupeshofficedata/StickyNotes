@@ -1,0 +1,6 @@
+build/
+spikes/*/build/
+spikes/*/images/
+spikes/*/*.html
+.remember/
+design_draft.md

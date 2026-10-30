@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rupeshofficedata.StickyNotes</id>
+  <name>StickyNotes</name>
+  <summary>Keep short notes in small windows on your desktop</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.rupeshofficedata">
+    <name>rupeshofficedata</name>
+  </developer>
+  <description>
+    <p>
+      StickyNotes keeps short notes as separate small windows, in the style of Windows Sticky Notes.
+      A list window finds and manages all notes.
+    </p>
+    <ul>
+      <li>Bold, italic, underline, strikethrough, bullet lists and note colors</li>
+      <li>Paste or drag images into a note</li>
+      <li>Search, and a bin that keeps deleted notes until you empty it</li>
+      <li>Notes are plain files in a folder you choose, so a folder that Nextcloud or Google Drive syncs works for backup</li>
+      <li>Dark mode follows the system</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.rupeshofficedata.StickyNotes.desktop</launchable>
+  <url type="homepage">https://github.com/rupeshofficedata/StickyNotes</url>
+  <provides>
+    <binary>stickynotes</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-10-28"/>
+  </releases>
+</component>

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.21)
+project(s1_richtext LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTOMOC ON)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui)
+add_executable(s1_richtext main.cpp)
+target_link_libraries(s1_richtext PRIVATE Qt6::Core Qt6::Gui)
