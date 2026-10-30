@@ -39,8 +39,19 @@ bool isBinName(const QString &s)
     return re.match(s).hasMatch();
 }
 
+// The notes folder may be shared or synced, so another party could plant symlinks in it. The app never
+// reads, writes, lists or deletes through one.
+bool isSymlink(const QString &path)
+{
+    return QFileInfo(path).isSymLink();
+}
+
 bool writeAtomic(const QString &path, const QByteArray &data, QString *error)
 {
+    if (isSymlink(path)) {
+        *error = QStringLiteral("Refusing to write through a symbolic link: ") + path;
+        return false;
+    }
     QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly)) {
         *error = f.errorString();
@@ -269,13 +280,17 @@ QVariantMap NoteStore::loadAt(const QString &dir) const
 
     // A missing, unreadable or unknown meta.json is not fatal: the note loads with the default color.
     QFile meta(dir + QStringLiteral("/meta.json"));
-    if (meta.open(QIODevice::ReadOnly)) {
+    if (!isSymlink(meta.fileName()) && meta.open(QIODevice::ReadOnly)) {
         const QString token = QJsonDocument::fromJson(meta.readAll()).object().value(QStringLiteral("color")).toString();
         if (colorTokens().contains(token))
             out[QStringLiteral("colorToken")] = token;
     }
 
     QFile note(dir + QStringLiteral("/note.html"));
+    if (isSymlink(dir) || isSymlink(note.fileName())) {
+        out[QStringLiteral("error")] = tr("Symbolic links are not followed");
+        return out;
+    }
     if (!note.open(QIODevice::ReadOnly)) {
         out[QStringLiteral("error")] = note.errorString();
         return out;
@@ -291,7 +306,7 @@ QVariantMap NoteStore::loadAt(const QString &dir) const
 bool NoteStore::moveToBin(const QString &id)
 {
     const QString dir = noteDir(id);
-    if (!m_available || dir.isEmpty() || !QFileInfo(dir).isDir())
+    if (!m_available || dir.isEmpty() || isSymlink(dir) || !QFileInfo(dir).isDir())
         return false;
     QDir root(m_folder);
     if (!root.mkpath(QStringLiteral(".bin")))
@@ -307,7 +322,7 @@ bool NoteStore::moveToBin(const QString &id)
 bool NoteStore::restoreFromBin(const QString &binName)
 {
     const QString src = binDir(binName);
-    if (!m_available || src.isEmpty() || !QFileInfo(src).isDir())
+    if (!m_available || src.isEmpty() || isSymlink(src) || !QFileInfo(src).isDir())
         return false;
     const QString id = binName.left(36);
     if (QFileInfo::exists(noteDir(id))) {
@@ -320,7 +335,13 @@ bool NoteStore::restoreFromBin(const QString &binName)
 bool NoteStore::deleteForever(const QString &binName)
 {
     const QString dir = binDir(binName);
-    if (!m_available || dir.isEmpty() || !QDir(dir).removeRecursively())
+    if (!m_available || dir.isEmpty() || isSymlink(dir) || !QFileInfo(dir).isDir())
+        return false;
+    // The entry must really live inside .bin, whatever the path says.
+    const QString bin = QDir(m_folder + QStringLiteral("/.bin")).canonicalPath();
+    if (bin.isEmpty() || !QFileInfo(dir).canonicalFilePath().startsWith(bin + QLatin1Char('/')))
+        return false;
+    if (!QDir(dir).removeRecursively())
         return false;
     m_settings->remove(QStringLiteral("window/") + binName.left(36));
     return true;
@@ -338,6 +359,10 @@ QString NoteStore::addImage(const QString &id, const QImage &image)
     const QString dir = noteDir(id);
     if (!m_available || dir.isEmpty() || image.isNull())
         return {};
+    if (isSymlink(dir) || isSymlink(dir + QStringLiteral("/images"))) {
+        emit imageRejected(id, tr("Symbolic links are not followed"));
+        return {};
+    }
     QByteArray png;
     QBuffer buf(&png);
     buf.open(QIODevice::WriteOnly);
@@ -371,7 +396,7 @@ QString NoteStore::addImageFile(const QString &id, const QString &path)
 
 QStringList NoteStore::idsIn(const QString &dir) const
 {
-    QStringList ids = QDir(dir).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    QStringList ids = QDir(dir).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     ids.erase(std::remove_if(ids.begin(), ids.end(), [](const QString &s) { return !isBinName(s); }), ids.end());
     return ids;
 }

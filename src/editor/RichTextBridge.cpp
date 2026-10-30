@@ -6,8 +6,11 @@
 #include <QMimeData>
 #include <QRegularExpression>
 #include <QTextCursor>
+#include <QTextBlock>
 #include <QTextDocument>
+#include <QTextFrame>
 #include <QTextList>
+#include <QTextTable>
 
 RichTextBridge::RichTextBridge(QObject *parent) : QObject(parent) {}
 
@@ -212,26 +215,87 @@ QString RichTextBridge::html() const
     return textDocument() ? textDocument()->toHtml() : QString();
 }
 
-QString RichTextBridge::sanitizeHtml(const QString &html)
+namespace {
+
+bool isNoteImage(const QString &name)
 {
-    static const QRegularExpression img(QStringLiteral("<img\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression src(QStringLiteral("\\bsrc\\s*=\\s*\"([^\"]*)\""),
-                                        QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression ok(
         QStringLiteral("^images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.png$"));
+    return ok.match(name).hasMatch();
+}
 
-    QString out;
-    qsizetype last = 0;
-    auto it = img.globalMatch(html);
-    while (it.hasNext()) {
-        const auto m = it.next();
-        out += html.mid(last, m.capturedStart() - last);
-        last = m.capturedEnd();
-        const auto s = src.match(m.captured());
-        if (s.hasMatch() && ok.match(s.captured(1)).hasMatch())
-            out += m.captured();
-        // else: drop the tag
+// Background images are the only resource a format can load besides an image fragment.
+void scrubFrame(QTextFrame *frame)
+{
+    QTextFrameFormat ff = frame->frameFormat();
+    if (ff.hasProperty(QTextFormat::BackgroundImageUrl)) {
+        ff.clearProperty(QTextFormat::BackgroundImageUrl);
+        frame->setFrameFormat(ff);
     }
-    out += html.mid(last);
-    return out;
+    if (auto *table = qobject_cast<QTextTable *>(frame)) {
+        for (int r = 0; r < table->rows(); ++r) {
+            for (int c = 0; c < table->columns(); ++c) {
+                QTextTableCell cell = table->cellAt(r, c);
+                QTextCharFormat cf = cell.format();
+                if (cf.hasProperty(QTextFormat::BackgroundImageUrl)) {
+                    cf.clearProperty(QTextFormat::BackgroundImageUrl);
+                    cell.setFormat(cf);
+                }
+            }
+        }
+    }
+    const auto children = frame->childFrames();
+    for (QTextFrame *child : children)
+        scrubFrame(child);
+}
+
+} // namespace
+
+QString RichTextBridge::sanitizeHtml(const QString &html)
+{
+    // A plain QTextDocument never loads anything. Qt's own parser decides which tags and CSS become an
+    // image or a background image, so there is no regex to get around (single quotes, duplicate src, CSS url()).
+    QTextDocument doc;
+    doc.setHtml(html);
+    scrubFrame(doc.rootFrame());
+
+    struct Range { int pos; int len; };
+    QVector<Range> badImages, badBackgrounds;
+    QVector<int> badBlocks;
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+        if (b.blockFormat().hasProperty(QTextFormat::BackgroundImageUrl))
+            badBlocks.append(b.position());
+        for (auto it = b.begin(); !it.atEnd(); ++it) {
+            const QTextFragment f = it.fragment();
+            const QTextCharFormat cf = f.charFormat();
+            if (cf.isImageFormat() && !isNoteImage(cf.toImageFormat().name()))
+                badImages.append({f.position(), f.length()});
+            else if (cf.hasProperty(QTextFormat::BackgroundImageUrl))
+                badBackgrounds.append({f.position(), f.length()});
+        }
+    }
+    // Apply after the walk, so no fragment iterator is used while the document changes.
+    // Format changes keep positions; removals run last, from the end of the document.
+    for (int pos : badBlocks) {
+        QTextCursor c(&doc);
+        c.setPosition(pos);
+        QTextBlockFormat bf = c.blockFormat();
+        bf.clearProperty(QTextFormat::BackgroundImageUrl);
+        c.setBlockFormat(bf);
+    }
+    for (const Range &r : badBackgrounds) {
+        QTextCursor c(&doc);
+        c.setPosition(r.pos);
+        c.setPosition(r.pos + r.len, QTextCursor::KeepAnchor);
+        QTextCharFormat cf = c.charFormat();
+        cf.clearProperty(QTextFormat::BackgroundImageUrl);
+        c.setCharFormat(cf);
+    }
+    for (auto it = badImages.crbegin(); it != badImages.crend(); ++it) {
+        QTextCursor c(&doc);
+        c.setPosition(it->pos);
+        c.setPosition(it->pos + it->len, QTextCursor::KeepAnchor);
+        c.removeSelectedText();
+    }
+    return doc.toHtml();
 }

@@ -281,6 +281,63 @@ private slots:
         QVERIFY(m_store->windowState(id).isEmpty());
     }
 
+    // --- symlinks planted in a shared or synced notes folder ---
+    void symlinkedNoteFolderIsNotListedOrLoaded()
+    {
+        const QString outside = m_tmp.path() + "/outside";
+        QVERIFY(QDir().mkpath(outside));
+        QVERIFY(writeFile(outside + "/note.html", "<p>from elsewhere</p>"));
+        const QString fake = "0123abcd-0123-4abc-8abc-0123456789ab";
+        QVERIFY(QFile::link(outside, m_root + '/' + fake));
+        QVERIFY(!m_store->noteIds().contains(fake));
+        QVERIFY(!m_store->load(fake).value("ok").toBool());
+        QVERIFY(!m_store->moveToBin(fake));
+    }
+
+    void symlinkedBinEntryIsNeverDeletedThrough()
+    {
+        const QString victim = m_tmp.path() + "/victim";
+        QVERIFY(QDir().mkpath(victim));
+        QVERIFY(writeFile(victim + "/precious.txt", "keep"));
+        QVERIFY(QDir().mkpath(m_root + "/.bin"));
+        const QString fake = "0123abcd-0123-4abc-8abc-0123456789ab";
+        QVERIFY(QFile::link(victim, m_root + "/.bin/" + fake));
+        QVERIFY(!m_store->binNames().contains(fake));
+        QVERIFY(!m_store->deleteForever(fake));
+        m_store->emptyBin();
+        QVERIFY(QFileInfo::exists(victim + "/precious.txt"));
+        QVERIFY(!m_store->restoreFromBin(fake));
+    }
+
+    void saveRefusesToWriteThroughASymlinkedNoteFile()
+    {
+        const QString id = m_store->createNote();
+        const QString target = m_tmp.path() + "/target.txt";
+        QVERIFY(writeFile(target, "do not touch"));
+        const QString file = m_store->noteDir(id) + "/note.html";
+        QVERIFY(QFile::remove(file));
+        QVERIFY(QFile::link(target, file));
+        QSignalSpy spy(m_store, &NoteStore::saveFailed);
+        QVERIFY(!m_store->save(id, QStringLiteral("<p>overwrite</p>"), QStringLiteral("default")));
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(readAll(target), QByteArray("do not touch"));
+    }
+
+    void imageIsNotWrittenThroughASymlinkedImagesFolder()
+    {
+        const QString id = m_store->createNote();
+        const QString elsewhere = m_tmp.path() + "/elsewhere";
+        QVERIFY(QDir().mkpath(elsewhere));
+        QVERIFY(QDir(m_store->noteDir(id) + "/images").removeRecursively());
+        QVERIFY(QFile::link(elsewhere, m_store->noteDir(id) + "/images"));
+        QImage img(4, 4, QImage::Format_ARGB32);
+        img.fill(Qt::red);
+        QSignalSpy spy(m_store, &NoteStore::imageRejected);
+        QVERIFY(m_store->addImage(id, img).isEmpty());
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(QDir(elsewhere).entryList(QDir::Files).isEmpty());
+    }
+
 private:
     static QByteArray readAll(const QString &p)
     {
