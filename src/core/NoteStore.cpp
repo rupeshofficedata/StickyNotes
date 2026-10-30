@@ -13,6 +13,12 @@
 #include <QUuid>
 #include <algorithm>
 
+#include <cerrno>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 Q_LOGGING_CATEGORY(lcStorage, "stickynotes.storage")
 
 namespace {
@@ -44,6 +50,79 @@ bool isBinName(const QString &s)
 bool isSymlink(const QString &path)
 {
     return QFileInfo(path).isSymLink();
+}
+
+// Directory handles for the operations that move or delete. A path is checked and then used a moment
+// later; someone with write access to a shared notes folder could swap a folder for a symlink in between.
+// Handles opened with O_NOFOLLOW cannot be redirected after they are open.
+class Fd
+{
+public:
+    explicit Fd(int fd = -1) : m_fd(fd) {}
+    Fd(const Fd &) = delete;
+    Fd &operator=(const Fd &) = delete;
+    ~Fd()
+    {
+        if (m_fd >= 0)
+            ::close(m_fd);
+    }
+    int get() const { return m_fd; }
+    bool ok() const { return m_fd >= 0; }
+
+private:
+    int m_fd;
+};
+
+// The notes folder itself may be reached through a symlink (the user chose it), so it is the one path that is followed.
+Fd openFolder(const QString &path)
+{
+    return Fd(::open(QFile::encodeName(path).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+}
+
+Fd openChildDir(int parent, const char *name)
+{
+    return Fd(::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+}
+
+bool isRealDirAt(int parent, const char *name)
+{
+    struct stat st;
+    return ::fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(st.st_mode);
+}
+
+bool existsAt(int parent, const char *name)
+{
+    struct stat st;
+    return ::fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) == 0;
+}
+
+// Moves a directory without replacing anything that already exists at the target.
+bool moveDirAt(int fromParent, const char *from, int toParent, const char *to)
+{
+    return ::renameat2(fromParent, from, toParent, to, RENAME_NOREPLACE) == 0;
+}
+
+// Deletes a directory tree. Symlinks inside it are unlinked, never followed.
+bool removeTreeAt(int parent, const char *name)
+{
+    Fd dirFd(::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (!dirFd.ok())
+        return false;
+    DIR *d = ::fdopendir(::dup(dirFd.get()));
+    if (!d)
+        return false;
+    bool ok = true;
+    while (const dirent *e = ::readdir(d)) {
+        const char *n = e->d_name;
+        if (n[0] == '.' && (n[1] == '\0' || (n[1] == '.' && n[2] == '\0')))
+            continue;
+        if (isRealDirAt(dirFd.get(), n))
+            ok = removeTreeAt(dirFd.get(), n) && ok;
+        else
+            ok = (::unlinkat(dirFd.get(), n, 0) == 0) && ok;
+    }
+    ::closedir(d);
+    return ::unlinkat(parent, name, AT_REMOVEDIR) == 0 && ok;
 }
 
 bool writeAtomic(const QString &path, const QByteArray &data, QString *error)
@@ -324,42 +403,62 @@ QVariantMap NoteStore::loadAt(const QString &dir) const
 bool NoteStore::moveToBin(const QString &id)
 {
     const QString dir = noteDir(id);
-    if (!m_available || dir.isEmpty() || isSymlink(dir) || !QFileInfo(dir).isDir())
+    if (!m_available || dir.isEmpty())
         return false;
-    QDir root(m_folder);
-    if (binRoot().isEmpty() || !root.mkpath(QStringLiteral(".bin")) || binRoot().isEmpty())
-        return false;   // .bin is a symlink or resolves outside the notes folder
-    const QString target = QStringLiteral(".bin/") + id;
-    if (root.exists(target)) {
+    const QByteArray name = id.toUtf8();
+    const Fd folder = openFolder(m_folder);
+    if (!folder.ok() || !isRealDirAt(folder.get(), name.constData()))
+        return false;   // missing, or a symlink
+    // Create .bin if needed, then open it without following a link. Everything below uses these handles.
+    if (::mkdirat(folder.get(), ".bin", 0777) != 0 && errno != EEXIST)
+        return false;
+    const Fd bin = openChildDir(folder.get(), ".bin");
+    if (!bin.ok())
+        return false;   // .bin is a symlink or not a directory
+    if (existsAt(bin.get(), name.constData())) {
         // Never overwrite an older bin entry: keep it under a timestamp suffix.
-        root.rename(target, target + QLatin1Char('.') + QString::number(QDateTime::currentMSecsSinceEpoch()));
+        const QByteArray old = (id + QLatin1Char('.') + QString::number(QDateTime::currentMSecsSinceEpoch())).toUtf8();
+        moveDirAt(bin.get(), name.constData(), bin.get(), old.constData());
     }
-    return root.rename(id, target);
+    return moveDirAt(folder.get(), name.constData(), bin.get(), name.constData());
 }
 
 bool NoteStore::restoreFromBin(const QString &binName)
 {
-    const QString src = binDir(binName);
-    if (!m_available || src.isEmpty() || isSymlink(src) || !QFileInfo(src).isDir())
+    if (!m_available || !isBinName(binName))
         return false;
-    const QString id = binName.left(36);
-    if (QFileInfo::exists(noteDir(id))) {
+    const QByteArray from = binName.toUtf8();
+    const QByteArray to = binName.left(36).toUtf8();
+    const Fd folder = openFolder(m_folder);
+    if (!folder.ok())
+        return false;
+    const Fd bin = openChildDir(folder.get(), ".bin");
+    if (!bin.ok() || !isRealDirAt(bin.get(), from.constData()))
+        return false;
+    if (existsAt(folder.get(), to.constData())) {
         emit restoreRefused(binName, tr("A note with this ID already exists."));
         return false;
     }
-    return QDir(m_folder).rename(QStringLiteral(".bin/") + binName, id);
+    // RENAME_NOREPLACE also covers the moment between the check above and the move.
+    if (!moveDirAt(bin.get(), from.constData(), folder.get(), to.constData())) {
+        emit restoreRefused(binName, tr("A note with this ID already exists."));
+        return false;
+    }
+    return true;
 }
 
 bool NoteStore::deleteForever(const QString &binName)
 {
-    const QString dir = binDir(binName);
-    if (!m_available || dir.isEmpty() || isSymlink(dir) || !QFileInfo(dir).isDir())
+    if (!m_available || !isBinName(binName))
         return false;
-    // The entry must really live in <notes folder>/.bin, whatever the paths say.
-    const QString expected = QDir(m_folder).canonicalPath() + QStringLiteral("/.bin/");
-    if (!QFileInfo(dir).canonicalFilePath().startsWith(expected))
+    const QByteArray name = binName.toUtf8();
+    const Fd folder = openFolder(m_folder);
+    if (!folder.ok())
         return false;
-    if (!QDir(dir).removeRecursively())
+    const Fd bin = openChildDir(folder.get(), ".bin");   // refuses a symlinked .bin
+    if (!bin.ok() || !isRealDirAt(bin.get(), name.constData()))
+        return false;                                     // missing, or a symlink
+    if (!removeTreeAt(bin.get(), name.constData()))
         return false;
     m_settings->remove(QStringLiteral("window/") + binName.left(36));
     return true;

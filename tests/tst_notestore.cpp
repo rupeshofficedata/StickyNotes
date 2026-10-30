@@ -376,6 +376,30 @@ private slots:
         QVERIFY(m_store->binNames().isEmpty());
     }
 
+    // A symlink inside a bin entry is removed as a link. Its target is never touched.
+    void symlinkInsideABinEntryIsUnlinkedNotFollowed()
+    {
+        const QString victim = m_tmp.path() + "/victim";
+        QVERIFY(QDir().mkpath(victim));
+        QVERIFY(writeFile(victim + "/precious.txt", "keep"));
+        const QString id = m_store->createNote();
+        QVERIFY(m_store->moveToBin(id));
+        QVERIFY(QFile::link(victim, m_root + "/.bin/" + id + "/images/escape"));
+        QVERIFY(m_store->deleteForever(id));
+        QVERIFY(!QFileInfo::exists(m_root + "/.bin/" + id));
+        QCOMPARE(readAll(victim + "/precious.txt"), QByteArray("keep"));
+    }
+
+    void deletingAndRestoringTheSameNoteTwiceIsSafe()
+    {
+        const QString id = m_store->createNote();
+        QVERIFY(m_store->moveToBin(id));
+        QVERIFY(m_store->restoreFromBin(id));
+        QVERIFY(!m_store->restoreFromBin(id));      // already restored
+        QVERIFY(!m_store->deleteForever(id));        // not in the bin any more
+        QVERIFY(m_store->noteIds().contains(id));
+    }
+
 private:
     static QByteArray readAll(const QString &p)
     {
