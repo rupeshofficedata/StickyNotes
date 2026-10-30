@@ -94,6 +94,9 @@ private:
     bool saveImpl(const QString &id, const QString &html, const QString &colorToken);
     void markUnavailable(const QString &path, const QString &reason);
     QStringList idsIn(const QString &dir) const;
+    // <folder>/.bin when it is safe to use: absent (not created yet), or a real directory inside the
+    // notes folder. Empty when .bin is a symlink or resolves anywhere else.
+    QString binRoot() const;
 
     QString m_default;
     QString m_folder;

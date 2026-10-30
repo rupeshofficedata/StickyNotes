@@ -338,6 +338,44 @@ private slots:
         QVERIFY(QDir(elsewhere).entryList(QDir::Files).isEmpty());
     }
 
+    // .bin itself is the link: entries inside it are inside the link target, not inside the notes folder.
+    void symlinkedBinFolderIsNeverUsed()
+    {
+        const QString victim = m_tmp.path() + "/victim";
+        const QString fake = "0123abcd-0123-4abc-8abc-0123456789ab";
+        QVERIFY(QDir().mkpath(victim + '/' + fake));
+        QVERIFY(writeFile(victim + '/' + fake + "/note.html", "<p>precious</p>"));
+        QVERIFY(QFile::link(victim, m_root + "/.bin"));
+
+        QVERIFY(m_store->binNames().isEmpty());                 // not listed, so not loaded or searched
+        QVERIFY(!m_store->deleteForever(fake));
+        m_store->emptyBin();
+        QVERIFY(QFileInfo::exists(victim + '/' + fake + "/note.html"));
+
+        const QString id = m_store->createNote();               // moving a note into the link target is refused
+        QVERIFY(!m_store->moveToBin(id));
+        QVERIFY(QFileInfo(m_store->noteDir(id)).isDir());
+        QVERIFY(QDir(victim).entryList(QDir::Dirs | QDir::NoDotAndDotDot) == QStringList{fake});
+        QVERIFY(!m_store->restoreFromBin(fake));
+        QVERIFY(!m_store->loadAt(m_store->binDir(fake)).value("ok").toBool());
+    }
+
+    // The notes folder may itself be reached through a symlink, for example a folder that was moved and linked.
+    void aSymlinkedNotesFolderStillWorksWithItsBin()
+    {
+        const QString real = m_tmp.path() + "/real";
+        const QString link = m_tmp.path() + "/link";
+        QVERIFY(QDir().mkpath(real));
+        QVERIFY(QFile::link(real, link));
+        QVERIFY(m_store->setFolder(link));
+        const QString id = m_store->createNote();
+        QVERIFY(!id.isEmpty());
+        QVERIFY(m_store->moveToBin(id));
+        QCOMPARE(m_store->binNames(), QStringList{id});
+        QVERIFY(m_store->deleteForever(id));
+        QVERIFY(m_store->binNames().isEmpty());
+    }
+
 private:
     static QByteArray readAll(const QString &p)
     {

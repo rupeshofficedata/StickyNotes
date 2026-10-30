@@ -193,9 +193,25 @@ QString NoteStore::noteDir(const QString &id) const
     return isNoteId(id) ? m_folder + QLatin1Char('/') + id : QString();
 }
 
+QString NoteStore::binRoot() const
+{
+    if (!m_available)
+        return {};
+    QString bin = m_folder + QStringLiteral("/.bin");
+    const QFileInfo fi(bin);
+    if (!fi.exists() && !fi.isSymLink())
+        return bin;   // not created yet
+    // Compare with where .bin must be, not with wherever a link points.
+    if (fi.isSymLink() || !fi.isDir()
+        || QDir(bin).canonicalPath() != QDir(m_folder).canonicalPath() + QStringLiteral("/.bin"))
+        return {};
+    return bin;
+}
+
 QString NoteStore::binDir(const QString &binName) const
 {
-    return isBinName(binName) ? m_folder + QStringLiteral("/.bin/") + binName : QString();
+    const QString root = binRoot();
+    return (root.isEmpty() || !isBinName(binName)) ? QString() : root + QLatin1Char('/') + binName;
 }
 
 QUrl NoteStore::noteUrl(const QString &id) const
@@ -271,6 +287,8 @@ QVariantMap NoteStore::load(const QString &id) const
 
 QVariantMap NoteStore::loadAt(const QString &dir) const
 {
+    if (dir.isEmpty())
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), tr("Invalid note folder")}};
     QVariantMap out{{QStringLiteral("ok"), false},
                     {QStringLiteral("html"), QString()},
                     {QStringLiteral("colorToken"), QStringLiteral("default")},
@@ -309,8 +327,8 @@ bool NoteStore::moveToBin(const QString &id)
     if (!m_available || dir.isEmpty() || isSymlink(dir) || !QFileInfo(dir).isDir())
         return false;
     QDir root(m_folder);
-    if (!root.mkpath(QStringLiteral(".bin")))
-        return false;
+    if (binRoot().isEmpty() || !root.mkpath(QStringLiteral(".bin")) || binRoot().isEmpty())
+        return false;   // .bin is a symlink or resolves outside the notes folder
     const QString target = QStringLiteral(".bin/") + id;
     if (root.exists(target)) {
         // Never overwrite an older bin entry: keep it under a timestamp suffix.
@@ -337,9 +355,9 @@ bool NoteStore::deleteForever(const QString &binName)
     const QString dir = binDir(binName);
     if (!m_available || dir.isEmpty() || isSymlink(dir) || !QFileInfo(dir).isDir())
         return false;
-    // The entry must really live inside .bin, whatever the path says.
-    const QString bin = QDir(m_folder + QStringLiteral("/.bin")).canonicalPath();
-    if (bin.isEmpty() || !QFileInfo(dir).canonicalFilePath().startsWith(bin + QLatin1Char('/')))
+    // The entry must really live in <notes folder>/.bin, whatever the paths say.
+    const QString expected = QDir(m_folder).canonicalPath() + QStringLiteral("/.bin/");
+    if (!QFileInfo(dir).canonicalFilePath().startsWith(expected))
         return false;
     if (!QDir(dir).removeRecursively())
         return false;
@@ -410,5 +428,6 @@ QStringList NoteStore::noteIds() const
 
 QStringList NoteStore::binNames() const
 {
-    return m_available ? idsIn(m_folder + QStringLiteral("/.bin")) : QStringList();
+    const QString root = binRoot();
+    return root.isEmpty() ? QStringList() : idsIn(root);
 }
